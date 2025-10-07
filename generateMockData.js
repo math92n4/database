@@ -1,5 +1,5 @@
-const { Client } = require("pg");
-const { faker } = require("@faker-js/faker");
+import { Client } from "pg";
+import { faker } from "@faker-js/faker";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -9,7 +9,7 @@ const client = new Client({
   host: process.env.HOST,
   database: process.env.POSTGRES_DB,
   password: process.env.POSTGRES_PASSWORD,
-  port: process.env.PORT
+  port: process.env.PORT,
 });
 
 async function generateMockData() {
@@ -468,7 +468,7 @@ async function generateMockData() {
     // ------------------------
     for (const product_id of products) {
       const related_id = faker.helpers.arrayElement(
-        products.filter((p) => p !== product_id)
+        products.filter(p => p !== product_id)
       );
       await client.query(
         `INSERT INTO productrelated (product_id, related_product_id, relation_type)
