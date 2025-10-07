@@ -407,4 +407,31 @@ BEGIN
 END;
 $$;
 
+
+-- INDEXES
+
+CREATE UNIQUE INDEX idx_customer_email ON customer(email);
+
+CREATE UNIQUE INDEX idx_product_sku ON product(sku);
+
+CREATE INDEX idx_product_category ON product(category_id);
+CREATE INDEX idx_product_brand ON product(brand_id);
+
+CREATE INDEX idx_product_name ON product(name);
+
+CREATE INDEX idx_order_customer ON "order"(customer_id);
+CREATE INDEX idx_order_status ON "order"(status);
+CREATE INDEX idx_order_date ON "order"(order_date);
+
+CREATE INDEX idx_coupon_active ON coupon(is_active);
+
+CREATE INDEX idx_review_product ON review(product_id);
+
+
+
+
+
+
+
+
 -- EVENTS ??
