@@ -197,3 +197,214 @@ CREATE TABLE warehouseproduct (
   last_updated   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (warehouse_id, product_id)
 );
+-- =========================================
+-- PROCEDURES
+-- =========================================
+
+-- 1. Process an order: confirm, update stock, and mark payment
+CREATE OR REPLACE PROCEDURE sp_ProcessOrder(p_order_id UUID)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    rec RECORD;
+    stock_qty INT;
+BEGIN
+    -- Loop through each product in the order
+    FOR rec IN
+        SELECT product_id, quantity
+        FROM orderproduct
+        WHERE order_id = p_order_id
+    LOOP
+        -- Check stock
+        SELECT stock_quantity INTO stock_qty
+        FROM product
+        WHERE product_id = rec.product_id;
+
+        IF stock_qty < rec.quantity THEN
+            RAISE EXCEPTION 'Not enough stock for product %', rec.product_id;
+        END IF;
+
+        -- Update stock
+        UPDATE product
+        SET stock_quantity = stock_quantity - rec.quantity
+        WHERE product_id = rec.product_id;
+    END LOOP;
+
+    -- Update order status
+    UPDATE "order"
+    SET status = 'confirmed'
+    WHERE order_id = p_order_id;
+
+    -- Process payment: mark as completed (simplified)
+    UPDATE payment
+    SET status = 'completed', payment_date = CURRENT_TIMESTAMP
+    WHERE order_id = p_order_id;
+
+    RAISE NOTICE 'Order % processed successfully', p_order_id;
+END;
+$$;
+
+-- 2. Calculate shipping cost
+CREATE OR REPLACE PROCEDURE sp_CalculateShipping(
+    p_order_id UUID,
+    OUT shipping_cost NUMERIC
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    total_weight NUMERIC := 0;
+BEGIN
+    SELECT COALESCE(SUM(p.weight * op.quantity),0) INTO total_weight
+    FROM orderproduct op
+    JOIN product p ON op.product_id = p.product_id
+    WHERE op.order_id = p_order_id;
+
+    -- Simple formula: $5 per kg
+    shipping_cost := total_weight * 5;
+
+    -- Update order total_amount to include shipping
+    UPDATE "order"
+    SET shipping_cost = shipping_cost,
+        total_amount = subtotal + tax_amount + shipping_cost - COALESCE(discount_amount,0)
+    WHERE order_id = p_order_id;
+
+    RAISE NOTICE 'Shipping cost for order %: %', p_order_id, shipping_cost;
+END;
+$$;
+
+-- 3. Update inventory in warehouse and global stock
+CREATE OR REPLACE PROCEDURE sp_UpdateInventory(
+    p_product_id UUID,
+    p_warehouse_id UUID,
+    p_quantity INT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Update warehouse stock
+    IF EXISTS (
+        SELECT 1 FROM warehouseproduct
+        WHERE warehouse_id = p_warehouse_id AND product_id = p_product_id
+    ) THEN
+        UPDATE warehouseproduct
+        SET stock_quantity = stock_quantity + p_quantity,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE warehouse_id = p_warehouse_id AND product_id = p_product_id;
+    ELSE
+        INSERT INTO warehouseproduct(warehouse_id, product_id, stock_quantity)
+        VALUES (p_warehouse_id, p_product_id, p_quantity);
+    END IF;
+
+    -- Update global product stock
+    UPDATE product
+    SET stock_quantity = stock_quantity + p_quantity
+    WHERE product_id = p_product_id;
+
+    RAISE NOTICE 'Inventory updated for product % in warehouse %', p_product_id, p_warehouse_id;
+END;
+$$;
+
+
+-- 5. Generate monthly sales report (example procedure)
+CREATE OR REPLACE PROCEDURE evt_GenerateMonthlyReports(p_month DATE)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    total_orders INT;
+    total_revenue NUMERIC(12,2);
+BEGIN
+    SELECT COUNT(*), COALESCE(SUM(total_amount),0)
+    INTO total_orders, total_revenue
+    FROM "order"
+    WHERE date_trunc('month', order_date) = date_trunc('month', p_month);
+
+    -- You could insert into a report table, or just raise notice
+    RAISE NOTICE 'Month: %, Total Orders: %, Total Revenue: %', p_month, total_orders, total_revenue;
+END;
+$$;
+
+
+
+CREATE OR REPLACE VIEW vw_LowStockProducts AS
+SELECT
+    p.product_id,
+    p.name AS product_name,
+    p.stock_quantity,
+    b.name AS brand_name,
+    c.name AS category_name
+FROM product p
+JOIN brand b ON p.brand_id = b.brand_id
+JOIN category c ON p.category_id = c.category_id
+WHERE p.stock_quantity <= 10
+ORDER BY p.stock_quantity ASC;
+
+
+CREATE OR REPLACE VIEW vw_BestSellingProducts AS
+SELECT
+    p.product_id,
+    p.name AS product_name,
+    COUNT(op.order_id) AS total_orders,
+    COALESCE(SUM(p.price), 0) AS total_revenue,
+    b.name AS brand_name,
+    c.name AS category_name
+FROM product p
+JOIN orderproduct op ON p.product_id = op.product_id
+JOIN brand b ON p.brand_id = b.brand_id
+JOIN category c ON p.category_id = c.category_id
+GROUP BY p.product_id, p.name, b.name, c.name
+ORDER BY total_orders DESC;
+
+-- 6. Update product rankings based on total orders
+CREATE OR REPLACE PROCEDURE evt_UpdateProductRankings()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE product p
+    SET stock_quantity = p.stock_quantity -- just placeholder, you could add popularity_score column
+    FROM (
+        SELECT op.product_id, SUM(op.quantity) AS total_sold
+        FROM orderproduct op
+        GROUP BY op.product_id
+    ) AS sub
+    WHERE p.product_id = sub.product_id;
+
+    RAISE NOTICE 'Product rankings updated';
+END;
+$$;
+
+
+
+CREATE OR REPLACE FUNCTION fn_GetProductRating(p_product_id UUID)
+RETURNS NUMERIC(3,2)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    avg_rating NUMERIC;
+BEGIN
+    SELECT ROUND(AVG(review_value), 2)
+    INTO avg_rating
+    FROM review
+    WHERE product_id = p_product_id;
+
+    RETURN COALESCE(avg_rating, 0);
+END;
+$$;
+
+
+CREATE OR REPLACE FUNCTION fn_CalculateCustomerLifetimeValue(p_customer_id UUID)
+RETURNS NUMERIC(12,2)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    total_spent NUMERIC;
+BEGIN
+    SELECT COALESCE(SUM(total_amount), 0)
+    INTO total_spent
+    FROM "order"
+    WHERE customer_id = p_customer_id;
+
+    RETURN total_spent;
+END;
+$$;
+
+-- EVENTS ??
