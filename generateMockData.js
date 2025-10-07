@@ -1,12 +1,15 @@
 const { Client } = require("pg");
 const { faker } = require("@faker-js/faker");
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const client = new Client({
-  user: "your_username",
-  host: "localhost",
-  database: "your_database",
-  password: "your_password",
-  port: 5432,
+  user: process.env.POSTGRES_USER,
+  host: process.env.HOST,
+  database: process.env.POSTGRES_DB,
+  password: process.env.POSTGRES_PASSWORD,
+  port: process.env.PORT
 });
 
 async function generateMockData() {
