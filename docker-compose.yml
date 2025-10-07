@@ -1,7 +1,15 @@
 services:
   postgres:
-    image: postgres:18
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
     container_name: webshop_db
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron
+      - -c
+      - cron.database_name=${POSTGRES_DB:-webshop}
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
