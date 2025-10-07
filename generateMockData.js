@@ -468,7 +468,7 @@ async function generateMockData() {
     // ------------------------
     for (const product_id of products) {
       const related_id = faker.helpers.arrayElement(
-        products.filter((p) => p !== product_id)
+        products.filter(p => p !== product_id)
       );
       await client.query(
         `INSERT INTO productrelated (product_id, related_product_id, relation_type)

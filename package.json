@@ -1,8 +1,29 @@
 {
+  "name": "database",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
   "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "generate": "node generateMockData.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/math92n4/database.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/math92n4/database/issues"
+  },
+  "homepage": "https://github.com/math92n4/database#readme",
   "dependencies": {
     "@faker-js/faker": "^9.9.0",
     "dotenv": "^17.2.3",
+    "express": "^5.1.0",
     "faker": "^6.6.6",
     "pg": "^8.16.3"
   }
