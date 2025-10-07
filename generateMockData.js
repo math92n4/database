@@ -12,9 +12,24 @@ const client = new Client({
   port: process.env.PORT,
 });
 
+const waitForDB = async (client, retries = 10, delay = 10000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await client.query("SELECT 1");
+      console.log("Database is ready!");
+      return;
+    } catch {
+      console.log(`Waiting for database... (${i + 1}/${retries})`);
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+  throw new Error("Database not ready after several attempts");
+};
+
 async function generateMockData() {
   try {
     await client.connect();
+    await waitForDB(client);
 
     // ------------------------
     // 1. Brand
@@ -210,18 +225,18 @@ async function generateMockData() {
     // ------------------------
     for (const order_id of orders) {
       await client.query(
-        `INSERT INTO payment (order_id, payment_method, amount, currency, status, payment_date)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
+        `INSERT INTO payment (order_id, payment_method, amount, status, payment_date)
+         VALUES ($1,$2,$3,$4,$5)`,
         [
           order_id,
           faker.helpers.arrayElement([
             "credit_card",
             "paypal",
-            "bank_transfer",
-            "invoice",
+            "bank",
+            "klarna",
+            "cash",
           ]),
           faker.number.float({ min: 50, max: 1000 }),
-          "USD",
           faker.helpers.arrayElement([
             "pending",
             "completed",
@@ -255,48 +270,109 @@ async function generateMockData() {
     // ------------------------
     // 12. Wishlist
     // ------------------------
+    const wishlists = [];
     for (const customer_id of customers) {
-      const wishlist_product_id = faker.helpers.arrayElement(products);
-      await client.query(
+      const res = await client.query(
         `INSERT INTO wishlist (wishlist_id, customer_id, wishlist_product_id, name)
-         VALUES (gen_random_uuid(),$1,$2,$3)`,
-        [customer_id, wishlist_product_id, faker.commerce.productName()]
-      );
-    }
-
-    // ------------------------
-    // 13. ProductRelated
-    // ------------------------
-    for (const product_id of products) {
-      const related_id = faker.helpers.arrayElement(
-        products.filter((p) => p !== product_id)
-      );
-      await client.query(
-        `INSERT INTO productrelated (product_id, related_product_id, relation_type)
-         VALUES ($1,$2,$3)`,
+         VALUES (gen_random_uuid(),$1,$2,$3) RETURNING wishlist_id`,
         [
-          product_id,
-          related_id,
-          faker.helpers.arrayElement(["accessory", "alternative", "bundle"]),
+          customer_id,
+          faker.helpers.arrayElement(products),
+          faker.commerce.productName(),
         ]
       );
+      wishlists.push(res.rows[0].wishlist_id);
     }
 
     // ------------------------
-    // 14. CustomerCoupon
+    // 13. OrderCoupon (Join Table)
     // ------------------------
-    for (const customer_id of customers) {
-      const coupon_id = faker.helpers.arrayElement(coupons);
-      await client.query(
-        `INSERT INTO customercoupon (customer_id, coupon_id, used_date, order_id)
-         VALUES ($1,$2,$3,NULL)`,
-        [customer_id, coupon_id, faker.date.recent()]
-      );
+    for (const order_id of orders) {
+      // 30% chance an order has a coupon applied
+      if (faker.datatype.boolean({ probability: 0.3 })) {
+        const coupon_id = faker.helpers.arrayElement(coupons);
+        try {
+          await client.query(
+            `INSERT INTO ordercoupon (order_id, coupon_id, applied_at)
+             VALUES ($1,$2,$3)`,
+            [order_id, coupon_id, faker.date.recent()]
+          );
+        } catch (err) {
+          // Skip if combination already exists
+          if (!err.message.includes("duplicate key")) {
+            throw err;
+          }
+        }
+      }
     }
 
-    console.log("✅ All mock data generated successfully!");
+    // ------------------------
+    // 14. OrderProduct (Join Table)
+    // ------------------------
+    for (const order_id of orders) {
+      const productsInOrder = faker.helpers.arrayElements(products, {
+        min: 1,
+        max: 4,
+      });
+      for (const product_id of productsInOrder) {
+        const quantity = faker.number.int({ min: 1, max: 5 });
+        const unit_price = faker.number.float({ min: 10, max: 500 });
+        const total_price = quantity * unit_price;
+
+        await client.query(
+          `INSERT INTO orderproduct (order_id, product_id, quantity, unit_price, total_price)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [order_id, product_id, quantity, unit_price, total_price]
+        );
+      }
+    }
+
+    // ------------------------
+    // 15. WishlistProduct (Join Table)
+    // ------------------------
+    for (const wishlist_id of wishlists) {
+      const productsInWishlist = faker.helpers.arrayElements(products, {
+        min: 1,
+        max: 5,
+      });
+      for (const product_id of productsInWishlist) {
+        try {
+          await client.query(
+            `INSERT INTO wishlistproduct (wishlist_id, product_id, added_at)
+             VALUES ($1,$2,$3)`,
+            [wishlist_id, product_id, faker.date.recent()]
+          );
+        } catch (err) {
+          // Skip if combination already exists
+          if (!err.message.includes("duplicate key")) {
+            throw err;
+          }
+        }
+      }
+    }
+
+    // ------------------------
+    // 16. WarehouseProduct (Join Table with Stock)
+    // ------------------------
+    for (const warehouse_id of warehouses) {
+      const productsInWarehouse = faker.helpers.arrayElements(products, {
+        min: 3,
+        max: 8,
+      });
+      for (const product_id of productsInWarehouse) {
+        const stock_quantity = faker.number.int({ min: 0, max: 1000 });
+
+        await client.query(
+          `INSERT INTO warehouseproduct (warehouse_id, product_id, stock_quantity, last_updated)
+           VALUES ($1,$2,$3,$4)`,
+          [warehouse_id, product_id, stock_quantity, faker.date.recent()]
+        );
+      }
+    }
+
+    console.log("All mock data generated successfully!");
   } catch (err) {
-    console.error("❌ Error generating mock data:", err);
+    console.error("Error generating mock data:", err);
   } finally {
     await client.end();
   }
