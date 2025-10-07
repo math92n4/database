@@ -1,7 +1,7 @@
 -- ======================
 -- Core reference tables
 -- ======================
-
+CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE brand (
@@ -197,6 +197,7 @@ CREATE TABLE warehouseproduct (
   last_updated   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (warehouse_id, product_id)
 );
+
 -- =========================================
 -- PROCEDURES
 -- =========================================
@@ -407,31 +408,127 @@ BEGIN
 END;
 $$;
 
+-- ======================
+-- TRIGGERS
+-- ======================
 
--- INDEXES
+-- 1. Automatically increment coupon usage when applied to an order
+CREATE OR REPLACE FUNCTION increment_coupon_usage()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE coupon
+  SET times_used = times_used + 1
+  WHERE coupon_id = NEW.coupon_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
-CREATE UNIQUE INDEX idx_customer_email ON customer(email);
+CREATE TRIGGER trg_increment_coupon_usage
+AFTER INSERT ON ordercoupon
+FOR EACH ROW
+EXECUTE FUNCTION increment_coupon_usage();
 
-CREATE UNIQUE INDEX idx_product_sku ON product(sku);
+-- 2. Validate coupon before applying to order
+CREATE OR REPLACE FUNCTION validate_coupon()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_coupon RECORD;
+  v_order_total NUMERIC(12,2);
+BEGIN
+  -- Get coupon details
+  SELECT * INTO v_coupon
+  FROM coupon
+  WHERE coupon_id = NEW.coupon_id;
+  
+  -- Get order total
+  SELECT total_amount INTO v_order_total
+  FROM "order"
+  WHERE order_id = NEW.order_id;
+  
+  -- Check if coupon is active
+  IF NOT v_coupon.is_active THEN
+    RAISE EXCEPTION 'Coupon is not active';
+  END IF;
+  
+  -- Check if coupon has expired
+  IF v_coupon.expiry_date IS NOT NULL AND v_coupon.expiry_date < CURRENT_DATE THEN
+    RAISE EXCEPTION 'Coupon has expired';
+  END IF;
+  
+  -- Check usage limit
+  IF v_coupon.times_used >= v_coupon.usage_limit THEN
+    RAISE EXCEPTION 'Coupon usage limit exceeded';
+  END IF;
+  
+  -- Check minimum order value
+  IF v_order_total < v_coupon.minimum_order_value THEN
+    RAISE EXCEPTION 'Order total does not meet minimum order value for this coupon';
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
-CREATE INDEX idx_product_category ON product(category_id);
-CREATE INDEX idx_product_brand ON product(brand_id);
+CREATE TRIGGER trg_validate_coupon
+BEFORE INSERT ON ordercoupon
+FOR EACH ROW
+EXECUTE FUNCTION validate_coupon();
 
-CREATE INDEX idx_product_name ON product(name);
+-- 3. Update product stock when order is placed
+CREATE OR REPLACE FUNCTION update_product_stock()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Decrease product stock quantity
+  UPDATE product
+  SET stock_quantity = stock_quantity - NEW.quantity
+  WHERE product_id = NEW.product_id;
+  
+  -- Check if stock went negative
+  IF (SELECT stock_quantity FROM product WHERE product_id = NEW.product_id) < 0 THEN
+    RAISE EXCEPTION 'Insufficient stock for product';
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
-CREATE INDEX idx_order_customer ON "order"(customer_id);
-CREATE INDEX idx_order_status ON "order"(status);
-CREATE INDEX idx_order_date ON "order"(order_date);
+CREATE TRIGGER trg_update_product_stock
+AFTER INSERT ON orderproduct
+FOR EACH ROW
+EXECUTE FUNCTION update_product_stock();
 
-CREATE INDEX idx_coupon_active ON coupon(is_active);
+-- 4. Restore product stock when order is cancelled
+CREATE OR REPLACE FUNCTION restore_product_stock()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Only restore stock if order status changed to cancelled or returned
+  IF NEW.status IN ('cancelled', 'returned') AND OLD.status NOT IN ('cancelled', 'returned') THEN
+    UPDATE product p
+    SET stock_quantity = stock_quantity + op.quantity
+    FROM orderproduct op
+    WHERE op.order_id = NEW.order_id
+    AND p.product_id = op.product_id;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
-CREATE INDEX idx_review_product ON review(product_id);
+CREATE TRIGGER trg_restore_product_stock
+AFTER UPDATE ON "order"
+FOR EACH ROW
+EXECUTE FUNCTION restore_product_stock();
 
 
+SELECT cron.schedule('deactivate-expired-coupons', '0 0 * * *', $$
+  UPDATE coupon 
+  SET is_active = FALSE 
+  WHERE expiry_date < CURRENT_DATE AND is_active = TRUE
+$$);
 
-
-
-
-
-
--- EVENTS ??
+SELECT cron.schedule('cancel-old-pending-orders', '0 2 * * *', $$
+  UPDATE "order" 
+  SET status = 'cancelled' 
+  WHERE status = 'pending' 
+  AND order_date < CURRENT_TIMESTAMP - INTERVAL '7 days'
+$$);

@@ -20,7 +20,7 @@ const waitForDB = async (client, retries = 10, delay = 10000) => {
       return;
     } catch {
       console.log(`Waiting for database... (${i + 1}/${retries})`);
-      await new Promise((res) => setTimeout(res, delay));
+      await new Promise(res => setTimeout(res, delay));
     }
   }
   throw new Error("Database not ready after several attempts");
@@ -298,8 +298,11 @@ async function generateMockData() {
             [order_id, coupon_id, faker.date.recent()]
           );
         } catch (err) {
-          // Skip if combination already exists
-          if (!err.message.includes("duplicate key")) {
+          if (
+            !err.message.includes("duplicate key") &&
+            !err.message.includes("Coupon") &&
+            !err.message.includes("minimum order value")
+          ) {
             throw err;
           }
         }
